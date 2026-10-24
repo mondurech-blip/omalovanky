@@ -3,7 +3,7 @@
 // The font is inside index.html, so nothing is loaded from other websites.
 // Other apps live on the same domain (Počty), so only this app's own old caches are deleted,
 // and the page asks for a check on every start (another app may have removed our cache).
-const CACHE = 'larine-omalovanky-20261024-141548';
+const CACHE = 'larine-omalovanky-20261024-153813';
 const FAMILY = CACHE.replace(/\d{8}-\d{6}$/, '');        // 'larine-omalovanky-' or 'larine-omalovanky-test-'
 const CORE = ['./', './index.html', './en/', './en/index.html', './clips-sk.js', './clips-en.js', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 const ours = k => k.startsWith(FAMILY) && !(FAMILY === 'larine-omalovanky-' && k.startsWith('larine-omalovanky-test-'));

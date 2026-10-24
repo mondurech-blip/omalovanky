@@ -254,6 +254,40 @@ h1 .lara { color: var(--pink); }
 .vrow span { flex: 1; font: 600 16px/1.2 var(--font-display); }
 .vrow small { display: block; font: 500 13px var(--font-body); color: var(--ink-soft); }
 .note { font-size: 14px; color: var(--ink-soft); }
+
+/* ---------- paint by numbers ---------- */
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.mode {
+  appearance: none; min-height: 96px; border: 3px solid var(--ink); border-radius: 26px; background: var(--panel); color: var(--ink);
+  box-shadow: 0 5px 0 var(--ink); display: flex; align-items: center; justify-content: center; gap: 14px; padding: 12px 16px;
+  font: 700 clamp(20px, 3vw, 28px)/1.1 var(--font-display);
+}
+.mode svg { width: 58px; height: 58px; flex: none; }
+.mode[aria-pressed="true"] { background: var(--butter); color: var(--on-accent); }
+.mode:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--ink); }
+.lv { display: flex; gap: 6px; justify-content: center; }
+.lv i {
+  min-width: 30px; height: 26px; padding: 0 5px; border-radius: 13px; border: 2px solid var(--ink-soft); background: var(--panel);
+  color: var(--ink-soft); font: 700 13px/22px var(--font-display); font-style: normal; text-align: center;
+}
+.lv i.ok { background: var(--mint); color: var(--on-accent); border-color: var(--ink); }
+.nsw {
+  appearance: none; position: relative; width: 60px; height: 60px; padding: 0; border-radius: 50%; border: 3px solid var(--ink);
+  background: var(--c); color: var(--t); display: grid; place-items: center; font: 700 30px/1 var(--font-display); transition: transform .12s;
+}
+.nsw svg { width: 40px; height: 40px; }
+.nsw[aria-pressed="true"] { transform: scale(1.12); outline: 4px solid var(--pink); outline-offset: 2px; }
+.nsw .tick {
+  position: absolute; right: -7px; top: -7px; width: 28px; height: 28px; border-radius: 50%; background: var(--mint);
+  border: 2px solid var(--ink); display: grid; place-items: center; color: var(--on-accent);
+}
+.nsw .tick svg { width: 17px; height: 17px; }
+.stages { display: grid; gap: 12px; }
+.sbig { justify-content: center; min-height: 92px; font: 700 40px/1 var(--font-display); position: relative; }
+.sbig svg { width: 60px; height: 60px; }
+.sbig .tick { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 40px; height: 40px; border-radius: 50%; background: var(--mint); border: 3px solid var(--ink); display: grid; place-items: center; }
+.sbig .tick svg { width: 24px; height: 24px; }
+#studio.num .group, #studio.num .sizes, #studio.num #moreBtn { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .dots i, .toast { animation: none; }
   .thumb, .sw { transition: none; }
@@ -273,6 +307,7 @@ h1 .lara { color: var(--pink); }
       </div>
       <h1 id="title"></h1>
       <div class="hello-row"><button class="rbtn" id="helloSay" type="button"></button><p class="hello" id="hello"></p></div>
+      <div class="modes" id="modes"></div>
       <nav class="chips" id="chips"></nav>
     </header>
     <div class="grid" id="grid"></div>
@@ -568,6 +603,117 @@ const Core = (() => {
   return { SIZE, MIN_AREA, wrap, svgUrl, loadImage, rasterize, analyze, regionMask, regionAt };
 })();
 
+// Paint by numbers: every closed area of a picture gets one colour number.
+// A picture lists seeds [x, y, colour] (one point inside an area, 800 x 800 units); areas without a seed take the
+// colour of the zone their middle lies in (zones: [[colour, polygon], ...]) or the background colour (bg).
+// An area too small for a 32-unit number is coloured by itself (auto).
+
+// Same name = same shade in every picture; light blue / blue and light purple / purple are far apart.
+const NUM_COLORS = {
+  cervena: '#e8414b', oranzova: '#f7902f', zlta: '#ffd84a', zelena: '#4caf50', modra: '#2d6bd8', svetlomodra: '#a6dbf8',
+  fialova: '#8a46c8', svetlofialova: '#dccbf6', ruzova: '#f7a1c4', hneda: '#9b6235', siva: '#9ea3a8', cierna: '#2a2a2e',
+};
+const NUM_SCENES = [];
+
+const NumCore = (() => {
+  const FIT = 44;                 // px at 1600: a 32-unit number (or dice) fits around the point
+  const SUM_W = 88, SUM_H = 34;   // half box (px at 1600) for a sum like "2 + 1"
+
+  function inPoly(x, y, P) {
+    let inside = false;
+    for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+      const [xi, yi] = P[i], [xj, yj] = P[j];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+
+  // Chamfer (3-4) distance from every area pixel to the nearest line or edge, in px.
+  function distance(a) {
+    const W = a.W, H = a.H, L = a.label, d = new Uint16Array(W * H);
+    const BIG = 60000;
+    for (let p = 0; p < W * H; p++) d[p] = L[p] ? BIG : 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const p = y * W + x; if (!d[p]) continue;
+      let v = d[p];
+      if (x === 0 || y === 0 || x === W - 1 || y === H - 1) v = 3;
+      if (x > 0 && d[p - 1] + 3 < v) v = d[p - 1] + 3;
+      if (y > 0) {
+        if (d[p - W] + 3 < v) v = d[p - W] + 3;
+        if (x > 0 && d[p - W - 1] + 4 < v) v = d[p - W - 1] + 4;
+        if (x < W - 1 && d[p - W + 1] + 4 < v) v = d[p - W + 1] + 4;
+      }
+      d[p] = v;
+    }
+    for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
+      const p = y * W + x; if (!d[p]) continue;
+      let v = d[p];
+      if (x < W - 1 && d[p + 1] + 3 < v) v = d[p + 1] + 3;
+      if (y < H - 1) {
+        if (d[p + W] + 3 < v) v = d[p + W] + 3;
+        if (x < W - 1 && d[p + W + 1] + 4 < v) v = d[p + W + 1] + 4;
+        if (x > 0 && d[p + W - 1] + 4 < v) v = d[p + W - 1] + 4;
+      }
+      d[p] = v;
+    }
+    return d;  // value / 3 = px
+  }
+
+  // Where a sum label fits completely inside the area: the deepest point whose box is all this area.
+  function sumSpot(a, d, id) {
+    const r = a.regions[id], W = a.W, L = a.label, cand = [];
+    for (let y = r.y0 + SUM_H; y <= r.y1 - SUM_H; y += 4) for (let x = r.x0 + SUM_W; x <= r.x1 - SUM_W; x += 4) {
+      const p = y * W + x; if (L[p] === id && d[p] >= SUM_H * 3) cand.push(p);
+    }
+    cand.sort((p, q) => d[q] - d[p]);
+    for (let i = 0; i < cand.length && i < 600; i++) {
+      const cy = (cand[i] / W) | 0, cx = cand[i] - cy * W;
+      let ok = true;
+      for (let yy = cy - SUM_H; yy <= cy + SUM_H && ok; yy += 6) for (let xx = cx - SUM_W; xx <= cx + SUM_W; xx += 6) {
+        if (L[yy * W + xx] !== id) { ok = false; break; }
+      }
+      if (ok) return [cx, cy];
+    }
+    return null;
+  }
+
+  // Specks too small to paint would stay white: here they become areas that colour themselves.
+  function unlock(a) {
+    const o = a.overlay.data;
+    for (let p = 0; p < a.grow.length; p++) if (a.grow[p] < 0) { a.grow[p] = -a.grow[p]; o[p * 4 + 3] = 0; }
+    for (const r of a.regions) if (r && r.locked) { r.locked = false; r.speck = true; }
+  }
+
+  // -> { color[id] (1-based, 0 = no area), pos[id] [x, y] px, fits[id], sum[id] [x, y] px | null, auto[], how[], errors[] }
+  function assign(sc, a) {
+    const S = a.W / 800, n = a.regions.length, errors = [];
+    const color = new Int16Array(n), seeds = new Int16Array(n), how = new Array(n).fill('');
+    for (const [x, y, c] of sc.seeds) {
+      const id = a.label[Math.round(y * S) * a.W + Math.round(x * S)];
+      if (!id || a.regions[id].locked) { errors.push(`bod ${x},${y} je na čiare`); continue; }
+      if (seeds[id]++) errors.push(`dve čísla v jednej ploche (${x},${y})`);
+      color[id] = c; how[id] = 'seed';
+    }
+    unlock(a);
+    const d = distance(a), best = new Uint16Array(n), at = new Int32Array(n);
+    for (let p = 0; p < d.length; p++) { const id = a.label[p]; if (id && d[p] > best[id]) { best[id] = d[p]; at[id] = p; } }
+    const pos = [], fits = [], sum = [];
+    for (let id = 1; id < n; id++) {
+      const y = (at[id] / a.W) | 0, x = at[id] - y * a.W;
+      pos[id] = [x, y];
+      if (!color[id]) {
+        const z = (sc.zones || []).find(([, P]) => inPoly(x / S, y / S, P));
+        color[id] = z ? z[0] : sc.bg; how[id] = z ? 'zone' : 'bg';
+      }
+      fits[id] = best[id] >= FIT * 3;
+      sum[id] = fits[id] ? sumSpot(a, d, id) : null;
+    }
+    return { color, pos, fits, sum, how, errors, count: n - 1 };
+  }
+
+  return { assign, inPoly, FIT };
+})();
+
 // Texts in both languages. The page is Slovak at the root address and English under /en/.
 // VOICE holds every sentence Lara hears; tools/clips-list.js turns it into the list of recordings.
 const I18N = (() => {
@@ -585,6 +731,9 @@ const I18N = (() => {
     zamok: 'Princess Castle', princezna: 'Little Princess', vila: 'Forest Fairy', 'morska-vila': 'Mermaid',
     dracik: 'Little Dragon', 'kuzelny-cajik': 'Magic Tea Party',
     jar: 'Spring', 'leto-plaz': 'Summer at the Beach', jesen: 'Autumn', 'zima-vianoce': 'Christmas', sneh: 'Snowman Winter',
+    'cis-lara': 'LARA', 'cis-jahoda': 'Strawberry', 'cis-zmrzlina': 'Ice Cream', 'cis-lienka': 'Ladybird', 'cis-balony': 'Balloons',
+    'cis-rybka': 'Little Fish', 'cis-zajko': 'Bunny in the Garden', 'cis-jednorozec': 'Unicorn', 'cis-hrad': 'Castle',
+    'cis-burj': 'Burj Al Arab', 'cis-tava': 'Camel in the Desert', 'cis-abra': 'Abra Boat',
     'dubaj-mesto': 'Burj Khalifa', tava: 'Camel in the Desert', 'hotel-plachta': 'Burj Al Arab', 'ain-dubai': 'Ain Dubai',
     'muzeum-buducnosti': 'Museum of the Future', 'kvetinova-zahrada': 'Miracle Garden', 'trh-lampase': 'Lantern Market',
     'datle-caj': 'Dates and Tea', 'lodka-abra': 'Boat Trip', 'piesocna-zabava': 'Fun in the Sand',
@@ -682,7 +831,9 @@ const I18N = (() => {
       pBackupMake: 'Vytvoriť zálohu', pBackupDownload: 'Stiahnuť súbor zálohy', pBackupShare: 'Uložiť / poslať zálohu',
       pRestoreDone: n => `Obnovené: ${n} ${n === 1 ? 'obrázok' : n >= 2 && n <= 4 ? 'obrázky' : 'obrázkov'}.`, pRestoreBad: 'Tento súbor nie je záloha omaľovánok.',
       pHold: 'Pre rodičov: podrž 3 sekundy', back: 'Späť', saved: 'Uložené', lockHint: 'Podrž 3 sekundy',
-      share: 'Larin obrázok', versions: n => `${n}. verzia`
+      share: 'Larin obrázok', versions: n => `${n}. verzia`,
+      modeCol: 'Omaľovánky', modeNum: 'Podľa čísel', stages: ['Bodky', 'Čísla', 'Príklady'], stageQ: 'Ako chceš maľovať?',
+      numCount: n => `<b>${n}</b> obrázkov podľa čísel`
     },
     en: {
       title: '<span class="lara">Lara\'s</span> colouring', hello: 'Hi Lara! Which picture shall we colour today?', otherLang: 'SK',
@@ -712,7 +863,9 @@ const I18N = (() => {
       pBackupMake: 'Make a backup', pBackupDownload: 'Download backup file', pBackupShare: 'Save / send backup',
       pRestoreDone: n => `Restored: ${n} ${n === 1 ? 'picture' : 'pictures'}.`, pRestoreBad: 'This file is not a colouring backup.',
       pHold: 'For grown-ups: hold for 3 seconds', back: 'Back', saved: 'Saved', lockHint: 'Hold for 3 seconds',
-      share: 'Lara\'s picture', versions: n => `version ${n}`
+      share: 'Lara\'s picture', versions: n => `version ${n}`,
+      modeCol: 'Colouring', modeNum: 'By numbers', stages: ['Dots', 'Numbers', 'Sums'], stageQ: 'How do you want to paint?',
+      numCount: n => `<b>${n}</b> paint-by-number pictures`
     }
   };
 
@@ -743,11 +896,23 @@ const I18N = (() => {
     cat_papier: ['Prázdny papier. Tu môžeš kresliť, čo chceš.', 'Blank paper. Here you can draw anything you like.'],
     cat_kutiky: ['Útulné kútiky', 'Cozy corners'], cat_zvieratka: ['Zvieratká', 'Animals'], cat_mnamky: ['Mňamky', 'Yummy food'],
     cat_priroda: ['Príroda a sny', 'Nature and dreams'], cat_carovne: ['Čarovné', 'Magic'], cat_obdobia: ['Ročné obdobia', 'Seasons'],
+    mode_col: ['Omaľovánky', 'Colouring'],
+    mode_num: ['Podľa čísel. Každé číslo má svoju farbu.', 'Paint by numbers. Every number has its own colour.'],
+    num_stage: ['Ako chceš maľovať? Bodky, čísla, alebo príklady.', 'How do you want to paint? Dots, numbers, or sums.'],
+    st_1: ['Bodky', 'Dots'], st_2: ['Čísla', 'Numbers'], st_3: ['Príklady', 'Sums'],
+    num_hint1: ['Vyber farbu a ťukni na plochy s rovnakým počtom bodiek.', 'Pick a colour and tap the shapes with the same number of dots.'],
+    num_hint2: ['Vyber farbu a ťukni na plochy s rovnakým číslom.', 'Pick a colour and tap the shapes with the same number.'],
+    num_hint3: ['Vypočítaj príklad v ploche. Výsledok je číslo farby.', 'Work out the sum in the shape. The answer is the number of the colour.'],
+    num_col_done: ['Táto farba je hotová!', 'This colour is all done!'],
+    c_cervena: ['červená', 'red'], c_oranzova: ['oranžová', 'orange'], c_zlta: ['žltá', 'yellow'], c_zelena: ['zelená', 'green'],
+    c_modra: ['modrá', 'blue'], c_svetlomodra: ['svetlomodrá', 'light blue'], c_fialova: ['fialová', 'purple'], c_svetlofialova: ['svetlofialová', 'light purple'],
+    c_ruzova: ['ružová', 'pink'], c_hneda: ['hnedá', 'brown'], c_siva: ['sivá', 'grey'], c_cierna: ['čierna', 'black'],
+    n1: ['jeden', 'one'], n2: ['dva', 'two'], n3: ['tri', 'three'], n4: ['štyri', 'four'], n5: ['päť', 'five'], n6: ['šesť', 'six'], n7: ['sedem', 'seven'], n8: ['osem', 'eight'],
     cat_dubaj: ['Dubaj', 'Dubai'], cat_svet: ['Okolo sveta', 'Around the world'], cat_zvierata_sveta: ['Zvieratá sveta', 'Animals of the world']
   };
 
   // What the voice says for a title when the written title would be read badly.
-  const SAY_TITLE = { 'lara-meno': ['Lara', 'Lara'] };
+  const SAY_TITLE = { 'lara-meno': ['Lara', 'Lara'], 'cis-lara': ['Lara', 'Lara'] };
 
   return { TITLE_EN, PLACE, PLACE_OF, CATS, TX, VOICE, SAY_TITLE };
 })();
@@ -8375,6 +8540,336 @@ function oBaobab(x, by, k) {
 
 </script>
 <script>
+// "Podľa čísel": twelve paint-by-number pages. Big areas only, details drawn as lines.
+// cols[i] = colour number i + 1; seeds [x, y, number]; bg = number of the remaining (background) areas.
+(() => {
+const qInk = { fill: INK, stroke: 'none' };
+const qW = w => ({ 'stroke-width': w });
+const qP = p => n2(p[0]) + ' ' + n2(p[1]);
+
+// smooth closed outline through points (Catmull-Rom)
+function qSmooth(pts, closed = true) {
+  const n = pts.length;
+  let d = 'M' + qP(pts[0]);
+  const segs = closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) {
+    const p0 = pts[closed ? (i - 1 + n) % n : Math.max(0, i - 1)], p1 = pts[i], p2 = pts[(i + 1) % n];
+    const p3 = pts[closed ? (i + 2) % n : Math.min(n - 1, i + 2)];
+    d += ` C${qP([p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6])} ${qP([p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6])} ${qP(p2)}`;
+  }
+  return d + (closed ? ' Z' : '');
+}
+// thick letters / strokes merged into one outlined shape
+function qStrokes(ds, w) {
+  return ds.map(d => path(d, { fill: 'none', 'stroke-width': w + 14 })).join('') +
+         ds.map(d => path(d, { fill: 'none', stroke: '#fff', 'stroke-width': w })).join('');
+}
+// lines/areas drawn only inside a shape, then the shape's outline again on top
+function qClip(id, d, inner) {
+  return path(d) + `<clipPath id="${id}"><path d="${d}"/></clipPath><g clip-path="url(#${id})">${inner}</g>` + path(d, { fill: 'none' });
+}
+function qSun(cx, cy, r, n = 10) {
+  let s = '';
+  for (let i = 0; i < n; i++) {
+    const a = i * 2 * Math.PI / n;
+    s += line(`M${qP([cx + Math.cos(a) * (r + 14), cy + Math.sin(a) * (r + 14)])} L${qP([cx + Math.cos(a) * (r + 42), cy + Math.sin(a) * (r + 42)])}`, 7);
+  }
+  return s + circle(cx, cy, r);
+}
+// flower: petals as one merged shape + centre
+function qFlower(cx, cy, r, petals = 5) {
+  const sh = [];
+  for (let i = 0; i < petals; i++) { const a = (-90 + i * 360 / petals) * Math.PI / 180; sh.push({ c: [cx + Math.cos(a) * r * 0.62, cy + Math.sin(a) * r * 0.62, r * 0.5] }); }
+  return union(sh) + circle(cx, cy, r * 0.42);
+}
+function qPalmLeaves(x, y, L, W, angles) {
+  return union([{ c: [x, y, W * 0.7] }].concat(angles.map(a => {
+    const c = Math.cos(a * Math.PI / 180), s = Math.sin(a * Math.PI / 180), nx = -s, ny = c;
+    const tip = [x + c * L, y + s * L + L * 0.25];
+    return { d: `M${qP([x, y])} Q${qP([x + c * L * 0.5 + nx * W, y + s * L * 0.5 + ny * W - W * 0.3])} ${qP(tip)} Q${qP([x + c * L * 0.5 - nx * W * 0.4, y + s * L * 0.5 - ny * W * 0.4 + W * 0.4])} ${qP([x, y])} Z` };
+  })));
+}
+const qPush = o => NUM_SCENES.push(o);
+
+// 1 ---------------------------------------------------------------- LARA
+qPush({
+  id: 'cis-lara', title: 'Lara', cols: ['cervena', 'oranzova', 'zelena', 'modra', 'ruzova', 'zlta', 'svetlofialova'], bg: 7,
+  seeds: [[86, 398, 1], [255, 470, 2], [424, 398, 3], [597, 470, 4],
+    [110, 130, 5], [500, 140, 5], [310, 680, 5], [690, 680, 5],
+    [300, 150, 6], [690, 130, 6], [120, 670, 6], [510, 670, 6]],
+  svg: () => {
+    let s = '';
+    const A = x => [`M${x} 520 L${x + 70} 285 L${x + 140} 520`, `M${x + 22} 445 H${x + 118}`];
+    let t = qStrokes(['M95 285 V520 H200'], 50) + qStrokes(A(270), 50) +
+            qStrokes(['M470 520 V285 H520 A62 62 0 0 1 520 409 H470', 'M515 409 L580 520'], 50) + qStrokes(A(630), 50);
+    s += g(t, 'translate(400 400) scale(0.9) translate(-443.5 -402)');
+    s += heart(110, 130, 100) + heart(500, 140, 90) + heart(310, 680, 100) + heart(690, 680, 100);
+    s += star(300, 150, 58, 30) + star(690, 130, 60, 31) + star(120, 670, 58, 30) + star(510, 670, 60, 31);
+    return s;
+  }
+});
+
+// 2 ---------------------------------------------------------------- strawberry
+const qBerry = 'M400 250 C470 236 560 232 600 290 C640 350 610 450 560 530 C510 610 450 680 400 690 C350 680 290 610 240 530 C190 450 160 350 200 290 C240 232 330 236 400 250 Z';
+qPush({
+  id: 'cis-jahoda', title: 'Jahoda', cols: ['cervena', 'zelena', 'hneda', 'ruzova', 'svetlomodra'], bg: 5,
+  seeds: [[300, 360, 1], [505, 360, 1], [320, 560, 1], [480, 560, 1], [400, 262, 2], [100, 160, 4], [690, 170, 4], [110, 660, 4], [690, 640, 4]],
+  zones: [[3, [[380, 120], [440, 120], [440, 240], [380, 240]]]],
+  svg: () => {
+    let s = '';
+    s += tube('M402 240 Q395 190 420 140', 26);
+    let pips = '';
+    [[345, 300], [455, 300], [250, 400], [550, 400], [372, 420], [430, 420], [270, 490], [530, 490], [400, 600], [350, 640], [450, 640], [400, 520], [330, 470], [470, 470]]
+      .forEach(([x, y]) => { pips += ellipse(x, y, 5, 8, qInk); });
+    s += qClip('qb', qBerry, line('M400 230 Q385 470 400 700', 7) + line('M170 450 Q400 500 640 450', 7) + pips);
+    const pts = [];
+    for (let i = 0; i < 12; i++) { const a = i * Math.PI / 6, r = i % 2 ? 42 : 118; pts.push([400 + Math.cos(a) * r, 262 + Math.sin(a) * r * 0.5]); }
+    s += path(qSmooth(pts));
+    s += heart(100, 160, 110) + heart(690, 170, 100) + heart(110, 660, 100) + heart(690, 640, 110);
+    return s;
+  }
+});
+
+// 3 ---------------------------------------------------------------- ice cream
+function qScoop(cx, cy, rx, ry, drips) {
+  const pts = [];
+  for (let i = 0; i <= 8; i++) { const a = Math.PI + i * Math.PI / 8; pts.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); }
+  for (let i = 1; i < drips * 2; i++) { const x = cx + rx - i * (2 * rx) / (drips * 2); pts.push([x, cy + (i % 2 ? 34 : 14) + (i % 4 === 1 ? 14 : 0)]); }
+  return path(qSmooth(pts));
+}
+const qCone = 'M282 430 L518 430 L410 742 Q400 760 390 742 Z';
+qPush({
+  id: 'cis-zmrzlina', title: 'Zmrzlina', cols: ['ruzova', 'hneda', 'zlta', 'oranzova', 'cervena', 'svetlomodra'], bg: 6,
+  seeds: [[400, 215, 1], [400, 330, 2], [410, 400, 3], [400, 128, 5]],
+  zones: [[4, [[282, 430], [518, 430], [400, 760]]]],
+  svg: () => {
+    let s = '';
+    let lat = '';
+    [520, 630].forEach(y => { lat += line(`M${400 - 400} ${y - 400} L${800} ${y + 400}`, 6) + line(`M${800} ${y - 400} L0 ${y + 400}`, 6); });
+    s += qClip('qc', qCone, lat);
+    s += qScoop(400, 425, 150, 80, 4);
+    s += qScoop(400, 330, 140, 80, 4);
+    s += qScoop(400, 235, 122, 76, 3);
+    s += line('M400 92 Q408 52 446 34', 7);
+    s += circle(400, 128, 44) + line('M380 108 Q372 122 378 136', 5);
+    s += line('M300 300 Q310 270 340 262', 5) + line('M470 410 Q490 400 500 380', 5);
+    return s;
+  }
+});
+
+// 4 ---------------------------------------------------------------- ladybird on a leaf, a flower
+qPush({
+  id: 'cis-lienka', title: 'Lienka', cols: ['cervena', 'cierna', 'zelena', 'zlta', 'ruzova', 'svetlomodra'], bg: 6,
+  seeds: [[388, 425, 1], [452, 425, 1], [420, 268, 2],
+    [355, 380, 2], [485, 380, 2], [338, 470, 2], [502, 470, 2], [378, 540, 2], [462, 540, 2],
+    [200, 640, 3], [640, 720, 3], [640, 610, 4], [640, 540, 5]],
+  svg: () => {
+    let s = '';
+    s += leaf(90, 720, 720, 330, -38);
+    s += tube('M640 650 V800', 18);
+    s += line('M398 250 Q370 190 340 180', 6) + line('M442 250 Q470 190 500 180', 6) + circle(338, 178, 9, qInk) + circle(502, 178, 9, qInk);
+    [[300, 400, 280, 390], [292, 460, 272, 462], [306, 520, 288, 534], [540, 400, 560, 390], [548, 460, 568, 462], [534, 520, 552, 534]]
+      .forEach(([a, b, c, d]) => { s += line(`M${a} ${b} L${c} ${d}`, 7); });
+    s += circle(420, 300, 64);
+    const body = 'M420 305 C500 305 548 370 548 445 C548 520 495 578 420 578 C345 578 292 520 292 445 C292 370 340 305 420 305 Z';
+    s += qClip('ql', body, line('M420 300 V585', 7) +
+      circle(355, 380, 32) + circle(485, 380, 32) + circle(338, 470, 32) + circle(502, 470, 32) + circle(378, 540, 30) + circle(462, 540, 30));
+    s += qFlower(640, 610, 90);
+    return s;
+  }
+});
+
+// 5 ---------------------------------------------------------------- balloons
+const qBal = [[160, 220, 1], [400, 160, 2], [640, 220, 3], [280, 400, 4], [520, 400, 5]];
+qPush({
+  id: 'cis-balony', title: 'Balóny', cols: ['cervena', 'zlta', 'zelena', 'fialova', 'oranzova', 'svetlomodra'], bg: 6,
+  seeds: [[120, 200, 1], [400, 140, 2], [680, 200, 3], [270, 420, 4], [530, 420, 5]],
+  zones: qBal.map(([x, y, c]) => [c, [[x - 20, y + 105], [x + 20, y + 105], [x, y + 150]]]),
+  svg: () => {
+    let s = '';
+    const ends = { 160: 340, 280: 370, 400: 400, 520: 430, 640: 460 };
+    qBal.forEach(([x, y]) => { const e = ends[x]; s += line(`M${x} ${y + 140} Q${(x + e) / 2 + 12} ${(y + 140 + 780) / 2} ${e} 780`, 5); });
+    qBal.forEach(([x, y]) => {
+      s += poly([[x - 16, y + 140], [x + 16, y + 140], [x, y + 112]], qW(6));
+      s += ellipse(x, y, 100, 120);
+      s += line(`M${x - 62} ${y - 30} Q${x - 56} ${y - 74} ${x - 20} ${y - 92}`, 6);
+    });
+    return s;
+  }
+});
+
+// 6 ---------------------------------------------------------------- striped fish
+const qFish = 'M190 380 C190 300 280 258 380 258 C490 258 575 320 585 380 C575 440 490 502 380 502 C280 502 190 460 190 380 Z';
+qPush({
+  id: 'cis-rybka', title: 'Rybka', cols: ['oranzova', 'zlta', 'cervena', 'zelena', 'ruzova', 'svetlomodra', 'modra'], bg: 7,
+  seeds: [[240, 380, 1], [395, 330, 1], [515, 420, 1], [325, 380, 2], [455, 380, 2],
+    [120, 380, 3], [395, 225, 3], [380, 520, 3], [110, 700, 4], [700, 660, 4], [470, 735, 5],
+    [640, 170, 6], [710, 80, 6], [600, 300, 6], [180, 150, 6]],
+  svg: () => {
+    let s = '';
+    s += path('M215 380 Q150 300 80 270 Q115 380 80 490 Q150 460 215 380 Z');
+    s += path('M300 275 Q340 170 450 190 Q470 230 480 275 Z');
+    s += path('M340 490 Q360 560 440 545 Q430 510 420 495 Z');
+    s += qClip('qf', qFish,
+      path('M292 240 Q322 380 292 520 L352 520 Q382 380 352 240 Z') + path('M425 240 Q455 380 425 520 L485 520 Q515 380 485 240 Z'));
+    s += circle(520, 350, 16, qInk) + line('M560 410 Q572 418 584 410', 6);
+    s += circle(640, 170, 44) + circle(710, 80, 28) + circle(600, 300, 30) + circle(180, 150, 36);
+    s += line('M650 150 Q660 140 672 146', 5) + line('M168 136 Q176 128 188 132', 5);
+    s += tube('M110 800 Q80 720 120 650 T100 520', 56);
+    s += tube('M700 800 Q730 730 690 660 T710 560', 56);
+    s += path('M400 775 Q385 685 470 655 Q555 685 540 775 Q470 792 400 775 Z');
+    [[430, 765, 420, 700], [455, 768, 450, 690], [485, 768, 490, 690], [510, 765, 520, 700]].forEach(([a, b, c, d]) => { s += line(`M${a} ${b} L${c} ${d}`, 5); });
+    return s;
+  }
+});
+
+// 7 ---------------------------------------------------------------- bunny in the garden
+qPush({
+  id: 'cis-zajko', title: 'Zajko v záhrade', cols: ['siva', 'ruzova', 'oranzova', 'zelena', 'zlta', 'fialova', 'svetlomodra'], bg: 7,
+  seeds: [[288, 82, 1], [413, 77, 1], [305, 185, 2], [397, 180, 2], [350, 300, 1], [440, 500, 1], [510, 500, 1], [290, 540, 1], [255, 655, 1], [430, 660, 1],
+    [500, 560, 3], [450, 440, 4], [680, 120, 5], [200, 770, 4], [475, 462, 4], [110, 680, 5], [640, 670, 5], [110, 600, 6], [640, 590, 6]],
+  zones: [[4, [[0, 590], [800, 590], [800, 800], [0, 800]]]],
+  svg: () => {
+    let s = '';
+    s += qSun(680, 120, 58);
+    s += path('M0 600 Q100 570 200 600 T400 600 T600 600 T800 600 V800 H0 Z');
+    s += line('M110 720 V780', 6) + line('M640 710 V780', 6);
+    s += qFlower(110, 680, 90) + qFlower(640, 670, 90);
+    s += g(ellipse(0, 0, 40, 110) + ellipse(0, 10, 20, 78), 'translate(305 175) rotate(-10)');
+    s += g(ellipse(0, 0, 40, 110) + ellipse(0, 10, 20, 78), 'translate(397 170) rotate(10)');
+    s += ellipse(350, 540, 125, 135);
+    s += circle(350, 360, 100);
+    s += ellipse(270, 660, 58, 30) + ellipse(430, 660, 58, 30);
+    s += union([{ e: [450, 425, 22, 46] }, { e: [480, 420, 20, 44] }]);
+    s += path('M445 450 Q475 440 500 450 L520 640 Q512 660 500 640 Z');
+    s += line('M462 500 L478 496', 5) + line('M468 560 L486 556', 5);
+    s += circle(440, 500, 30) + circle(510, 500, 30);
+    s += ellipse(315, 345, 9, 12, qInk) + ellipse(385, 345, 9, 12, qInk);
+    s += path('M342 378 L358 378 L350 388 Z', { fill: INK, 'stroke-width': 4 });
+    s += line('M350 388 Q340 402 330 396', 5) + line('M350 388 Q360 402 370 396', 5);
+    s += line('M300 385 L262 378', 4) + line('M300 395 L262 400', 4) + line('M400 385 L438 378', 4) + line('M400 395 L438 400', 4);
+    return s;
+  }
+});
+
+// 8 ---------------------------------------------------------------- unicorn
+const qMane = [[215, 575, 2], [205, 500, 3], [215, 425, 4], [240, 355, 2], [275, 290, 3], [295, 262, 4]];
+qPush({
+  id: 'cis-jednorozec', title: 'Jednorožec', cols: ['ruzova', 'fialova', 'modra', 'oranzova', 'zlta', 'zelena', 'svetlomodra'], bg: 7,
+  seeds: [[420, 400, 1], [338, 172, 1], [427, 198, 5], [110, 140, 5], [650, 140, 5], [720, 330, 5], [400, 720, 6]],
+  svg: () => {
+    let s = '';
+    s += path('M300 275 Q290 180 330 150 Q368 200 365 268 Z');
+    s += path(qSmooth([[255, 700], [240, 520], [262, 360], [320, 268], [430, 240], [540, 300], [630, 410], [618, 478], [540, 486], [470, 462], [455, 540], [490, 700]]));
+    s += path('M378 252 L480 92 L432 246 Z');
+    s += line('M410 220 L438 208', 5) + line('M430 180 L454 170', 5) + line('M448 142 L466 134', 5);
+    s += line('M455 335 Q480 355 505 335', 6) + line('M462 343 L455 358', 5) + line('M480 348 L480 364', 5) + line('M497 343 L505 358', 5);
+    s += line('M590 430 Q600 422 606 432', 6) + line('M560 470 Q585 478 605 466', 5);
+    const mane = qMane;
+    mane.forEach(([x, y]) => { s += g(path('M0 -70 C55 -60 60 40 10 70 C-40 60 -55 -40 0 -70 Z'), `translate(${x} ${y}) rotate(-25)`); });
+    s += path('M0 640 Q200 600 400 630 T800 620 V800 H0 Z');
+    s += star(110, 140, 52, 27) + star(650, 140, 54, 28) + star(720, 330, 44, 23);
+    return s;
+  },
+});
+qMane.forEach(([x, y, c], i) => NUM_SCENES[NUM_SCENES.length - 1].seeds.push([x, y + 12, c]));
+
+// 9 ---------------------------------------------------------------- castle
+qPush({
+  id: 'cis-hrad', title: 'Hrad', cols: ['ruzova', 'fialova', 'hneda', 'zlta', 'cervena', 'siva', 'zelena', 'svetlomodra'], bg: 8,
+  seeds: [[205, 540, 1], [595, 540, 1], [400, 400, 1], [205, 215, 2], [595, 215, 2], [400, 560, 3],
+    [205, 385, 4], [595, 385, 4], [305, 435, 4], [495, 435, 4], [228, 95, 5], [618, 95, 5], [400, 740, 6], [120, 700, 7], [680, 700, 7]],
+  svg: () => {
+    let s = '';
+    let top = 'M250 600 V360';
+    for (let x = 250; x < 550; x += 60) top += ` H${x + 30} V330 H${x + 60} V360`;
+    s += path(top + ' V600 Z');
+    [[150, 205], [540, 595]].forEach(([x0, cx]) => {
+      s += line(`M${cx} 140 V70`, 6) + path(`M${cx} 72 L${cx + 62} 92 L${cx} 114 Z`, qW(6));
+      s += rect(x0, 265, 110, 340, 4);
+      s += path(`M${x0 - 14} 275 L${cx} 130 L${x0 + 124} 275 Z`);
+      s += path(`M${cx - 26} 420 V375 A26 26 0 0 1 ${cx + 26} 375 V420 Z`);
+    });
+    s += path('M280 465 V425 A25 25 0 0 1 330 425 V465 Z') + path('M470 465 V425 A25 25 0 0 1 520 425 V465 Z');
+    s += path('M345 600 V520 A55 55 0 0 1 455 520 V600 Z') + circle(432, 548, 6, qInk);
+    s += path('M0 604 H800 V800 H0 Z');
+    s += path('M352 604 H448 L520 800 H280 Z');
+    s += line('M350 660 H390', 5) + line('M420 700 H462', 5) + line('M330 745 H372', 5);
+    return s;
+  }
+});
+
+// 10 --------------------------------------------------------------- Burj Al Arab
+qPush({
+  id: 'cis-burj', title: 'Burj Al Arab', cols: ['siva', 'modra', 'zlta', 'oranzova', 'hneda', 'zelena', 'svetlomodra'], bg: 7,
+  seeds: [[470, 400, 1], [400, 450, 1], [400, 720, 2], [470, 640, 3], [130, 130, 4], [258, 520, 5], [220, 330, 6]],
+  zones: [[2, [[0, 560], [800, 560], [800, 800], [0, 800]]], [1, [[380, 30], [440, 30], [560, 140], [610, 330], [580, 620], [370, 620]]]],
+  svg: () => {
+    let s = '';
+    s += qSun(130, 130, 56);
+    s += path('M0 560 H800 V800 H0 Z');
+    [[60, 640], [560, 700], [200, 740], [620, 620]].forEach(([x, y]) => { s += line(`M${x} ${y} q30 -16 60 0 t60 0`, 6); });
+    s += ellipse(470, 610, 230, 42);
+    s += path('M396 120 L404 40 L412 120 Z', qW(6));
+    s += path('M380 600 Q360 360 404 112 L436 116 Q414 360 430 600 Z');
+    [180, 280, 380, 480].forEach(y => { s += line(`M${396 - (y - 180) * 0.05} ${y} l18 30 M${414 - (y - 180) * 0.05} ${y} l-18 30`, 5); });
+    s += path('M436 116 C540 160 600 400 560 600 L430 600 Q414 360 436 116 Z');
+    [200, 280, 360, 440, 520].forEach(y => { s += line(`M${440 - (y - 116) * 0.02} ${y} Q500 ${y + 12} ${530 + (y < 360 ? (y - 116) * 0.1 : (600 - y) * 0.1)} ${y - 4}`, 5); });
+    s += line('M534 168 L520 210', 6) + ellipse(548, 156, 46, 14);
+    s += rect(360, 588, 230, 26, 10);
+    s += tube('M260 620 Q240 520 252 360', 26);
+    s += qPalmLeaves(252, 350, 120, 34, [-170, -130, -50, -10, 30, 150]);
+    return s;
+  }
+});
+
+// 11 --------------------------------------------------------------- camel in the desert
+const qCamel = qSmooth([[170, 440], [190, 375], [245, 345], [295, 260], [345, 270], [375, 345], [420, 375], [440, 420], [420, 470], [330, 485], [210, 482]]);
+qPush({
+  id: 'cis-tava', title: 'Ťava v púšti', cols: ['hneda', 'cervena', 'zlta', 'oranzova', 'modra', 'zelena', 'svetlomodra'], bg: 7,
+  seeds: [[195, 430, 1], [520, 245, 1], [210, 535, 1], [250, 535, 1], [370, 535, 1], [410, 535, 1], [300, 330, 2], [305, 438, 2], [120, 720, 3], [640, 760, 3], [640, 130, 4], [100, 540, 4], [640, 525, 5], [693, 440, 6]],
+  zones: [[6, [[590, 200], [800, 200], [800, 370], [590, 370]]], [4, [[0, 380], [800, 380], [800, 600], [0, 600]]]],
+  svg: () => {
+    let s = '';
+    s += qSun(640, 130, 56);
+    s += path('M0 470 Q180 390 380 450 T800 430 V800 H0 Z');
+    s += ellipse(640, 525, 95, 26);
+    s += tube('M690 520 Q675 420 700 320', 24);
+    s += qPalmLeaves(700, 310, 110, 32, [-160, -110, -60, -15, 35]);
+    s += path('M0 640 Q250 560 500 630 T800 610 V800 H0 Z');
+    [[210, 0], [250, 0], [370, 0], [410, 0]].forEach(([x]) => { s += tube(`M${x} 470 Q${x + 4} 520 ${x} 565`, 30); });
+    s += line('M175 420 Q150 450 158 500', 6);
+    s += path(qSmooth([[395, 380], [440, 335], [462, 270], [482, 228], [522, 212], [568, 222], [584, 246], [570, 266], [532, 272], [508, 292], [492, 345], [462, 410], [420, 440]]));
+    s += line('M510 216 Q512 200 522 196', 6) + circle(540, 236, 7, qInk) + line('M566 254 Q574 258 580 252', 5);
+    s += qClip('qt', qCamel, path('M232 320 Q300 220 372 320 L390 450 Q305 470 222 450 Z') + line('M228 400 Q305 420 382 400', 6));
+    s += path('M420 800 Q600 670 800 705 V800 Z');
+    return s;
+  }
+});
+
+// 12 --------------------------------------------------------------- abra boat on Dubai Creek
+qPush({
+  id: 'cis-abra', title: 'Abra', cols: ['hneda', 'cervena', 'modra', 'siva', 'zlta', 'oranzova', 'svetlomodra'], bg: 7,
+  seeds: [[400, 640, 1], [405, 485, 2], [400, 740, 3], [100, 430, 4], [255, 430, 4], [390, 440, 4], [560, 420, 4], [700, 430, 4],
+    [105, 353, 5], [255, 285, 5], [255, 371, 5], [560, 313, 5], [705, 361, 5], [390, 382, 5], [125, 125, 6]],
+  zones: [[3, [[0, 470], [800, 470], [800, 800], [0, 800]]]],
+  svg: () => {
+    let s = '';
+    s += qSun(125, 125, 54);
+    [[50, 300, 110, 172], [200, 230, 110, 242], [340, 330, 100, 142], [500, 250, 120, 222], [650, 310, 110, 162]].forEach(([x, y, w, h]) => { s += rect(x, y, w, h, 6); });
+    s += rect(68, 322, 74, 62, 8) + rect(218, 254, 74, 62, 8) + rect(218, 340, 74, 62, 8) + rect(523, 280, 74, 66, 8) + rect(668, 330, 74, 62, 8) + rect(355, 352, 70, 60, 8);
+    s += path('M0 472 H800 V800 H0 Z');
+    [[60, 720], [600, 740], [660, 560], [80, 560]].forEach(([x, y]) => { s += line(`M${x} ${y} q30 -16 60 0 t60 0`, 6); });
+    s += line('M270 500 V600', 8) + line('M540 500 V600', 8) + line('M405 500 V600', 8);
+    s += path('M230 470 Q405 440 580 470 L580 500 L230 500 Z');
+    s += path('M150 590 L640 590 Q690 580 700 540 Q712 600 650 670 L210 670 Q170 640 150 590 Z');
+    return s;
+  }
+});
+})();
+
+</script>
+<script>
 (() => {
 'use strict';
 const MODE = 'pwa';
@@ -8508,6 +9003,7 @@ const SFX = {
   undo: () => tone(680, 360, 0.15, 'sine', 0.08),
   pop: () => { tone(380, 880, 0.1, 'sine', 0.09); tone(880, 1200, 0.06, 'sine', 0.04, 0.08); },
   trash: () => tone(320, 110, 0.2, 'triangle', 0.1),
+  wrong: () => tone(330, 247, 0.22, 'sine', 0.06),
   chime: () => [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, f, 0.42, 'triangle', 0.09, i * 0.11))
 };
 
@@ -8589,7 +9085,12 @@ for (let i = SCENES.length - 1; i >= 0; i--) {
   try { sc.body = typeof sc.svg === 'function' ? sc.svg() : sc.svg; sc.url = Core.svgUrl(sc.body, 400); }
   catch (e) { SCENES.splice(i, 1); }
 }
+for (let i = NUM_SCENES.length - 1; i >= 0; i--) {
+  const sc = NUM_SCENES[i];
+  try { sc.body = sc.svg(); sc.url = Core.svgUrl(sc.body, 400); } catch (e) { NUM_SCENES.splice(i, 1); }
+}
 const sceneById = id => SCENES.find(s => s.id === id);
+const numById = id => NUM_SCENES.find(s => s.id === id);
 const titleOf = sc => LANG === 'en' ? (I18N.TITLE_EN[sc.id] || sc.title) : sc.title;
 const placeKey = id => I18N.PLACE_OF[id] || '';
 const placeOf = id => { const k = placeKey(id); return k ? I18N.PLACE[k][LI] : ''; };
@@ -8606,10 +9107,12 @@ const DB = (() => {
   function open() {
     if (!p) p = new Promise((res, rej) => {
       let r;
-      try { r = indexedDB.open(DB_NAME, 2); } catch (e) { rej(e); return; }
+      try { r = indexedDB.open(DB_NAME, 3); } catch (e) { rej(e); return; }
       r.onupgradeneeded = e => {
         const db = r.result, tx = r.transaction;
         if (!db.objectStoreNames.contains('art')) db.createObjectStore('art');
+        // v3: paint by numbers keeps its own store ('num'); nothing else changes
+        if (!db.objectStoreNames.contains('num')) db.createObjectStore('num');
         if (e.oldVersion < 2) {
           const meta = db.createObjectStore('meta'), paint = db.createObjectStore('paint');
           // Migration from the first app: each painted picture becomes version 1 of its scene.
@@ -8644,9 +9147,16 @@ const DB = (() => {
     metas: () => tx(['meta'], 'readonly', t => t.objectStore('meta').getAll()).catch(() => []),
     paint: vid => tx(['paint'], 'readonly', t => t.objectStore('paint').get(vid)).catch(() => null),
     save: (meta, rec) => tx(['meta', 'paint'], 'readwrite', t => { t.objectStore('meta').put(meta, meta.vid); if (rec) t.objectStore('paint').put(rec, meta.vid); }),
-    del: vid => tx(['meta', 'paint'], 'readwrite', t => { t.objectStore('meta').delete(vid); t.objectStore('paint').delete(vid); }).catch(() => {})
+    del: vid => tx(['meta', 'paint'], 'readwrite', t => { t.objectStore('meta').delete(vid); t.objectStore('paint').delete(vid); }).catch(() => {}),
+    nums: () => tx(['num'], 'readonly', t => t.objectStore('num').getAll()).catch(() => []),
+    numPut: rec => tx(['num'], 'readwrite', t => { t.objectStore('num').put(rec, rec.key); }),
+    numDel: key => tx(['num'], 'readwrite', t => { t.objectStore('num').delete(key); }).catch(() => {})
   };
 })();
+// Paint by numbers: 'scene|stage' = work in progress, 'scene|stage|time' = a finished picture (shown in My pictures).
+let NUMS = new Map();
+async function loadNums() { NUMS = new Map((await DB.nums()).filter(r => r && r.key).map(r => [r.key, r])); }
+const numDoneStages = scene => new Set([...NUMS.values()].filter(r => r.scene === scene && r.done).map(r => r.stage));
 let METAS = new Map();   // vid -> meta
 async function loadMetas() { METAS = new Map((await DB.metas()).filter(m => m && m.vid).map(m => [m.vid, m])); }
 const versionsOf = scene => [...METAS.values()].filter(m => m.scene === scene);
@@ -8658,8 +9168,10 @@ const S = {
   tool: store.get('tool', 'marker'), color: store.get('color', '#FF9CBF'), size: store.get('size', 1), sound: store.get('sound', true),
   cat: store.get('cat', 'all'), scene: null, meta: null, A: null, free: false, bg: '#ffffff', stk: [], sel: -1,
   masks: new Map(), maskPx: 0, undo: [], undoBytes: 0, samples: null,
-  view: { s: 1, fitS: 1, ox: 0, oy: 0 }, anim: null, changed: false
+  view: { s: 1, fitS: 1, ox: 0, oy: 0 }, anim: null, changed: false,
+  home: store.get('home', 'col'), num: null   // num = the open paint-by-numbers picture
 };
+if (!['col', 'num'].includes(S.home)) S.home = 'col';
 if (S.cat === 'started') S.cat = 'mine';
 if (!CAT_KEYS.includes(S.cat)) S.cat = 'all';
 if (!COLORS.some(c => c[0] === S.color)) S.color = '#FF9CBF';
@@ -8764,12 +9276,51 @@ function card(sc, meta, opts = {}) {
   }
   return b;
 }
+const ICON_COL = '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 6C17 6 6 17 6 30c0 12 9 20 18 20 4 0 5-3 4-6s1-6 5-6h7c9 0 18-6 18-15C58 13 46 6 32 6z" fill="#fff"/><circle cx="19" cy="27" r="5" fill="#ff7fa8"/><circle cx="27" cy="16" r="5" fill="#ffcf3d"/><circle cx="40" cy="15" r="5" fill="#7cc8f5"/><circle cx="49" cy="25" r="5" fill="#93d67a"/></svg>';
+const ICON_NUM = '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><rect x="5" y="9" width="54" height="46" rx="10" fill="#fff"/><path d="M5 32h54M32 9v46" stroke-width="2.5"/><path d="M5 32V19A10 10 0 0 1 15 9h17v23z" fill="#ff9cbf"/><path d="M32 32h27v13a10 10 0 0 1-10 10H32z" fill="#7cc8f5"/><g fill="currentColor" stroke="none" font-family="Fredoka, sans-serif" font-weight="700" font-size="17" text-anchor="middle"><text x="18.5" y="27">1</text><text x="45.5" y="27">2</text><text x="18.5" y="50">3</text><text x="45.5" y="50">2</text></g></svg>';
+function buildModes() {
+  const el = $('#modes'); el.innerHTML = '';
+  [['col', ICON_COL, TX.modeCol], ['num', ICON_NUM, TX.modeNum]].forEach(([k, ic, label]) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'mode';
+    b.setAttribute('aria-pressed', String(S.home === k)); b.innerHTML = ic + `<span>${label}</span>`;
+    b.addEventListener('click', () => {
+      S.home = k; store.set('home', k); buildModes(); buildGrid();
+      sayKey(k === 'num' ? 'mode_num' : 'mode_col');
+    });
+    el.appendChild(b);
+  });
+  $('#chips').hidden = S.home === 'num';
+}
+const stageLabel = st => st === 1 ? '•••' : st === 2 ? '1 2 3' : '2 + 1';
+function numCard(sc) {
+  const done = numDoneStages(sc.id);
+  let last = null; for (const r of NUMS.values()) if (r.scene === sc.id && r.thumb && (!last || r.t > last.t)) last = r;
+  const b = card(sc, null, { sub: ' ' });
+  if (last) b.querySelector('img').src = last.thumb;
+  const lv = document.createElement('span'); lv.className = 'lv';
+  lv.innerHTML = [1, 2, 3].filter(st => st > 1 || sc.cols.length <= 6).map(st => `<i class="${done.has(st) ? 'ok' : ''}">${stageLabel(st)}</i>`).join('');
+  b.querySelector('.name').replaceChildren(document.createTextNode(titleOf(sc)), lv);
+  if (done.size) { const bd = document.createElement('span'); bd.className = 'badge done'; bd.innerHTML = I.check; b.appendChild(bd); }
+  b.addEventListener('click', () => openStages(sc));
+  return b;
+}
 function buildGrid() {
   const grid = $('#grid'); grid.innerHTML = '';
+  if (S.home === 'num') {
+    for (const sc of NUM_SCENES) grid.appendChild(numCard(sc));
+    $('#foot').innerHTML = `<span>${TX.numCount(NUM_SCENES.length)}</span><span>${TX.autosave}</span>`;
+    return;
+  }
   if (S.cat === 'mine') {
-    const list = [...METAS.values()].sort((a, b) => b.t - a.t);
+    const nums = [...NUMS.values()].filter(r => r.done && numById(r.scene)).map(r => ({ num: r, t: r.t }));
+    const list = [...METAS.values()].concat(nums).sort((a, b) => b.t - a.t);
     if (!list.length) emptyRow(grid);
     for (const m of list) {
+      if (m.num) {
+        const sc = numById(m.num.scene), b = card(sc, { thumb: m.num.thumb, done: true }, { sub: `${TX.modeNum} · ${stageLabel(m.num.stage)}` });
+        b.addEventListener('click', () => openNum(sc, m.num.stage, m.num.key));
+        grid.appendChild(b); continue;
+      }
       const sc = sceneById(m.scene); if (!sc) continue;
       const many = versionsOf(m.scene).length > 1;
       const b = card(sc, m, { sub: [many ? TX.versions(m.n) : '', m.done ? TX.done : ''].filter(Boolean).join(' · ') });
@@ -8870,6 +9421,7 @@ function buildPalette() {
   pal.dataset.mode = S.tool === 'stickers' ? 'stk' : 'col';
 }
 function syncTools() {
+  if (S.num) { syncNumPalette(); return; }
   setCur();
   if ($('#palette').dataset.mode !== (S.tool === 'stickers' ? 'stk' : 'col')) buildPalette();
   document.querySelectorAll('[data-tool]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === S.tool)));
@@ -8962,7 +9514,9 @@ function render() {
     ctx.drawImage(a.c, a.x, a.y); ctx.restore();
     if (t >= 1) finishFill(); else more = true;
   }
+  if (S.num && numTint(ctx)) more = true;
   if (!S.free) ctx.drawImage(lines, 0, 0);
+  if (S.num && numLabels(ctx)) more = true;
   drawStickers(ctx, S.stk, S.tool === 'stickers' ? S.sel : -1);
   ctx.restore();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -9001,6 +9555,7 @@ function undo() {
   const u = S.undo.pop(); if (!u) return;
   if (u.k === 's') { S.stk = u.stk; S.sel = -1; }
   else { S.undoBytes -= u.img.width * u.img.height * 4; pctx.putImageData(u.img, u.x, u.y); }
+  if (u.n && S.num) { S.num.filled.delete(u.n); syncNumPalette(); }
   SFX.undo(); syncUndo(); scheduleSave(); requestRender();
 }
 
@@ -9152,6 +9707,7 @@ cv.addEventListener('pointerdown', e => {
   if (pointers.size > 2 || !S.A || busy) return;
   finishFill();
   const ip = toImg(pointers.get(e.pointerId));
+  if (S.num) { act = { kind: 'tap', id: e.pointerId, ip }; return; }
   if (S.tool === 'stickers') {
     const i = stkHit(ip);
     S.sel = i;
@@ -9213,7 +9769,7 @@ function pointerEnd(e) {
     if (act.moved) scheduleSave();
   }
   else if (act.kind === 'stroke') commitStroke(act);
-  else if (act.kind === 'tap' && e.type === 'pointerup') doFill(act.ip);
+  else if (act.kind === 'tap' && e.type === 'pointerup') { if (S.num) numTap(act.ip); else doFill(act.ip); }
   act = null; requestRender();
 }
 cv.addEventListener('pointerup', pointerEnd);
@@ -9254,6 +9810,7 @@ async function openVersion(sc, vid) {
   S.meta = vid ? Object.assign({}, METAS.get(vid)) : { vid: nv.vid, scene: sc.id, n: nv.n, t: 0, thumb: '', done: false, pct: 0 };
   S.A = null; S.anim = null; act = null; S.undo = []; S.undoBytes = 0; S.changed = false; S.stk = []; S.sel = -1; S.samples = null;
   S.free = !!sc.free; S.bg = sc.bg || '#ffffff';
+  numMode(false);
   clearMasks(); syncUndo(); syncTools();
   $('#loadingText').textContent = TX.loading;
   $('#loading').hidden = false;
@@ -9316,6 +9873,7 @@ function saveNow() {
   clearTimeout(saveT);
   if (!S.changed || !S.scene || !S.A) return Promise.resolve();
   S.changed = false;
+  if (S.num) return numSave();
   const stk = S.stk.map(o => Object.assign({}, o));
   const meta = Object.assign({}, S.meta, { t: Date.now(), thumb: makeThumb() });
   if (!S.free) {
@@ -9335,10 +9893,202 @@ function goHome() {
   closeSheet(); stopVoice();
   saveNow();   // takes its snapshot right away; writing finishes in the background
   S.A = null; S.scene = null; clearMasks(); S.undo = []; S.undoBytes = 0; S.stk = []; S.sel = -1;
+  numMode(false);
   showScreen('gallery'); buildGrid();
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
 window.addEventListener('pagehide', () => { saveNow(); });
+
+// ---------- paint by numbers ----------
+// Levels: 1 = dots like on a dice (pictures with up to 6 colours), 2 = numbers, 3 = sums (answer = colour number).
+// The only tool is the bucket: the right colour fills the area and its number goes away; a wrong one only blinks the number.
+const PIPS = { 1: [[0, 0]], 2: [[-1, -1], [1, 1]], 3: [[-1, -1], [0, 0], [1, 1]], 4: [[-1, -1], [1, -1], [-1, 1], [1, 1]],
+  5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]], 6: [[-1, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [1, 1]] };
+const diceSvg = (n, col) => `<svg viewBox="-15 -15 30 30">${PIPS[n].map(([x, y]) => `<circle cx="${x * 8}" cy="${y * 8}" r="3.6" fill="${col}"/>`).join('')}</svg>`;
+function textOn(hex) {
+  const v = parseInt(hex.slice(1), 16), l = (0.299 * (v >> 16) + 0.587 * ((v >> 8) & 255) + 0.114 * (v & 255)) / 255;
+  return l > 0.6 ? '#2c2340' : '#ffffff';
+}
+const numColor = c => NUM_COLORS[S.num.sc.cols[c - 1]];
+function numMode(on) {
+  if (!on) S.num = null;
+  $('#studio').classList.toggle('num', !!on);
+  if (!on && $('#palette').dataset.mode === 'num') $('#palette').dataset.mode = '';
+}
+let stagePick = null;
+function openStages(sc) {
+  const done = numDoneStages(sc.id), list = [1, 2, 3].filter(s => s > 1 || sc.cols.length <= 6);
+  stagePick = sc;
+  openSheet(`<div class="h-row"><h2>${titleOf(sc)}</h2>${spk('num_stage')}</div><p>${TX.stageQ}</p>
+    <div class="stages">${list.map(s => `<div class="line"><button class="sbtn sbig${s === 2 ? ' soft' : ''}" style="flex:1" data-act="num-stage" data-st="${s}" type="button" aria-label="${TX.stages[s - 1]}">${s === 1 ? diceSvg(3, 'currentColor') : stageLabel(s)}${done.has(s) ? `<span class="tick">${I.check}</span>` : ''}</button>${spk('st_' + s, TX.stages[s - 1])}</div>`).join('')}</div>
+    <button class="sbtn" data-act="close" type="button">${I.close}${TX.close}</button>`);
+  sayKey('num_stage');
+}
+// key: a finished picture from My pictures; otherwise the work in progress of this level (or a fresh start)
+async function openNum(sc, stage, key) {
+  if (busy) return;
+  busy = true;
+  stopVoice();
+  const rec0 = NUMS.get(key || sc.id + '|' + stage);
+  const rec = rec0 ? Object.assign({}, rec0) : { key: sc.id + '|' + stage, scene: sc.id, stage, filled: [], sums: null, done: false, t: 0, thumb: '' };
+  S.scene = sc; S.meta = null; S.A = null; S.anim = null; act = null; S.undo = []; S.undoBytes = 0; S.changed = false; S.stk = []; S.sel = -1; S.samples = null;
+  S.free = false; S.bg = '#ffffff';
+  S.num = { sc, stage, rec, r: null, filled: new Set(rec.filled || []), sel: 0, flash: null, idleT: performance.now() };
+  numMode(true);
+  clearMasks(); syncUndo();
+  $('#palette').innerHTML = '';
+  $('#loadingText').textContent = TX.loading;
+  $('#loading').hidden = false;
+  showScreen('studio');
+  resizeCanvas();
+  speakTitle(sc);
+  await nextFrame(); await nextFrame();
+  try {
+    const A = Core.analyze(await Core.rasterize(sc.body));
+    const r = NumCore.assign(sc, A);
+    lctx.clearRect(0, 0, SIZE, SIZE); lctx.putImageData(A.overlay, 0, 0);
+    A.overlay = null; A.label = null;
+    S.num.r = r;
+    if (stage === 3 && !rec.sums) {   // drawn once per picture and kept
+      rec.sums = {};
+      for (let id = 1; id <= r.count; id++) if (r.fits[id] && r.sum[id]) { const c = r.color[id], a = c === 1 ? 1 : 1 + Math.floor(Math.random() * (c - 1)); rec.sums[id] = [a, c - a]; }
+      S.changed = true;
+    }
+    pctx.globalAlpha = 1; pctx.globalCompositeOperation = 'source-over';
+    pctx.fillStyle = '#ffffff'; pctx.fillRect(0, 0, SIZE, SIZE);
+    S.A = A;
+    for (let id = 1; id <= r.count; id++) if (!r.fits[id] || S.num.filled.has(id)) { const m = maskFor(id); pctx.drawImage(tinted(m, numColor(r.color[id])), m.x, m.y); }
+    buildNumPalette();
+    $('#loading').hidden = true;
+    const hk = 'numHint' + stage;
+    if (!rec.done && !store.get(hk, false)) { store.set(hk, true); setTimeout(() => { if (S.num && S.num.sc === sc) sayKey('num_hint' + stage); }, 1700); }
+  } catch (err) {
+    $('#loadingText').textContent = TX.loadFail;
+  }
+  busy = false;
+  resizeCanvas();
+}
+function tinted(m, col) {
+  const t = mk(m.w, m.h), x = t.getContext('2d');
+  x.drawImage(m.canvas, 0, 0); x.globalCompositeOperation = 'source-in'; x.fillStyle = col; x.fillRect(0, 0, m.w, m.h);
+  return t;
+}
+function buildNumPalette() {
+  const pal = $('#palette'), N = S.num; pal.innerHTML = ''; pal.dataset.mode = 'num';
+  N.sc.cols.forEach((k, i) => {
+    const c = i + 1, hex = NUM_COLORS[k], b = document.createElement('button');
+    b.type = 'button'; b.className = 'nsw'; b.dataset.n = c;
+    b.style.setProperty('--c', hex); b.style.setProperty('--t', textOn(hex));
+    b.setAttribute('aria-label', `${c} ${V['c_' + k][LI]}`);
+    b.innerHTML = N.stage === 1 ? diceSvg(c, textOn(hex)) : String(c);
+    b.addEventListener('click', () => numPick(c));
+    pal.appendChild(b);
+  });
+  syncNumPalette();
+}
+const numLeft = c => { const N = S.num, r = N.r, out = []; for (let id = 1; id <= r.count; id++) if (r.fits[id] && !N.filled.has(id) && (!c || r.color[id] === c)) out.push(id); return out; };
+function syncNumPalette() {
+  const N = S.num; if (!N || !N.r) return;
+  document.querySelectorAll('#palette .nsw').forEach(b => {
+    const c = +b.dataset.n, full = !numLeft(c).length, t = b.querySelector('.tick');
+    b.setAttribute('aria-pressed', String(N.sel === c));
+    if (full && !t) b.insertAdjacentHTML('beforeend', `<span class="tick">${I.check}</span>`); else if (!full && t) t.remove();
+  });
+}
+function numPick(c) {
+  const N = S.num; if (!N || !N.r) return;
+  N.sel = c; N.idleT = performance.now();
+  const k = N.sc.cols[c - 1];
+  SFX.pick(); speak(['n' + c, 'c_' + k], `${c}. ${V['c_' + k][LI]}`);
+  N.flash = { kind: 'color', ids: numLeft(c), t0: performance.now(), dur: 1500, color: numColor(c) };
+  syncNumPalette(); requestRender();
+}
+function numTap(ip) {
+  const N = S.num; if (!N || !N.r || N.rec.done) return;
+  finishFill();
+  const id = Core.regionAt(S.A, ip.x, ip.y, reach()), r = N.r;
+  if (!id || !r.fits[id] || N.filled.has(id)) return;
+  N.idleT = performance.now();
+  if (!N.sel) { sayKey('num_hint' + N.stage); return; }
+  if (r.color[id] !== N.sel) {   // no punishment: a soft sound and the number blinks
+    SFX.wrong(); N.flash = { kind: 'wrong', ids: [id], t0: performance.now(), dur: 900 }; requestRender(); return;
+  }
+  const m = maskFor(id), t = tinted(m, numColor(N.sel));
+  pushUndo(m.x, m.y, m.x + m.w, m.y + m.h); S.undo[S.undo.length - 1].n = id;
+  N.filled.add(id);
+  if (N.flash && N.flash.kind !== 'wrong') N.flash = null;
+  const R = Math.max(Math.hypot(ip.x - m.x, ip.y - m.y), Math.hypot(ip.x - m.x - m.w, ip.y - m.y), Math.hypot(ip.x - m.x, ip.y - m.y - m.h), Math.hypot(ip.x - m.x - m.w, ip.y - m.y - m.h));
+  S.anim = { c: t, x: m.x, y: m.y, cx: ip.x, cy: ip.y, R, t0: performance.now(), dur: reduced ? 0 : Math.min(520, 200 + R * 0.35) };
+  SFX.fill();
+  syncNumPalette();
+  if (!numLeft(0).length) {
+    N.rec.done = true; S.undo = []; S.undoBytes = 0; syncUndo();
+    setTimeout(() => { finishFill(); saveNow(); celebrate(); }, 650);
+  } else if (!numLeft(N.sel).length) setTimeout(() => { tone(784, 1047, 0.25, 'triangle', 0.07); sayKey('num_col_done'); }, 350);
+  requestRender();
+}
+// colour picked / idle hint: the areas glow softly a few times
+function numTint(c) {
+  const N = S.num, F = N && N.flash; if (!F || F.kind === 'wrong') return false;
+  const t = (performance.now() - F.t0) / F.dur;
+  if (t >= 1) { N.flash = null; return false; }
+  if (!F.tints) F.tints = F.ids.slice(0, 60).map(id => { const m = maskFor(id); return [tinted(m, F.color), m.x, m.y]; });
+  c.globalAlpha = 0.6 * Math.abs(Math.sin(t * Math.PI * 3));
+  for (const [cc, x, y] of F.tints) c.drawImage(cc, x, y);
+  c.globalAlpha = 1;
+  return true;
+}
+function numLabels(c) {
+  const N = S.num; if (!N || !N.r) return false;
+  const r = N.r, F = N.flash;
+  let hotId = 0, k = 0;
+  if (F && F.kind === 'wrong') {
+    const t = (performance.now() - F.t0) / F.dur;
+    if (t >= 1) N.flash = null; else { hotId = F.ids[0]; k = Math.abs(Math.sin(t * Math.PI * 3)); }
+  }
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  for (let id = 1; id <= r.count; id++) {
+    if (!r.fits[id] || N.filled.has(id)) continue;
+    const col = r.color[id], sum = N.stage === 3 && N.rec.sums && N.rec.sums[id];
+    const [x, y] = sum && r.sum[id] ? r.sum[id] : r.pos[id];
+    c.save(); c.translate(x, y);
+    if (id === hotId) c.scale(1 + 0.3 * k, 1 + 0.3 * k);
+    c.fillStyle = id === hotId ? `rgb(${Math.round(44 + 188 * k)},${Math.round(35 + 30 * k)},${Math.round(64 + 11 * k)})` : '#2c2340';
+    if (N.stage === 1) { for (const [px, py] of PIPS[col]) { c.beginPath(); c.arc(px * 23, py * 23, 13, 0, Math.PI * 2); c.fill(); } }
+    else { c.font = `700 ${sum ? 54 : 64}px Fredoka, ui-rounded, sans-serif`; c.fillText(sum ? `${sum[0]} + ${sum[1]}` : String(col), 0, 4); }
+    c.restore();
+  }
+  return !!hotId;
+}
+// nothing coloured for 20 seconds: one empty area glows gently
+setInterval(() => {
+  const N = S.num;
+  if (!N || !N.r || busy || N.rec.done || !$('#sheet').hidden || $('#studio').hidden) return;
+  if (performance.now() - N.idleT < 20000) return;
+  N.idleT = performance.now();
+  const pool = numLeft(N.sel).length ? numLeft(N.sel) : numLeft(0);
+  if (!pool.length) return;
+  const id = pool[Math.floor(Math.random() * pool.length)];
+  N.flash = { kind: 'idle', ids: [id], t0: performance.now(), dur: 1800, color: N.sel ? numColor(N.sel) : '#ffdf7e' };
+  requestRender();
+}, 1000);
+// a finished level is kept as its own record ('scene|stage|time'), so the level can be painted again later
+function numSave() {
+  const N = S.num;
+  const rec = Object.assign({}, N.rec, { filled: [...N.filled], t: Date.now(), thumb: makeThumb() });
+  let oldKey = null;
+  if (rec.done && rec.key.split('|').length === 2) { oldKey = rec.key; rec.key = rec.key + '|' + rec.t; }
+  N.rec = rec;
+  NUMS.set(rec.key, rec); if (oldKey) NUMS.delete(oldKey);
+  return DB.numPut(rec).then(() => (oldKey ? DB.numDel(oldKey) : null)).catch(() => { /* not saved */ });
+}
+async function numDelete() {
+  const N = S.num; if (!N) return;
+  clearTimeout(saveT); S.changed = false;
+  const k = N.rec.key;
+  await DB.numDel(k); NUMS.delete(k);
+  closeSheet(); goHome();
+}
 
 // ---------- celebration: confetti, chime and praise ----------
 function celebrate() {
@@ -9402,6 +10152,11 @@ $('#sheetBody').addEventListener('click', e => {
   else if (a === 'p-restore') $('#restoreFile').click();
   else if (a === 'p-sound') { S.sound = !S.sound; store.set('sound', S.sound); if (!S.sound) stopVoice(); openParentGallery(); }
   else if (a === 'p-gallery') openParentGallery();
+  else if (a === 'num-stage') { closeSheet(); if (stagePick) openNum(stagePick, +b.dataset.st); }
+  else if (a === 'p-num-del') openSheet(`<h2>${TX.pDelQ}</h2><p>${titleOf(S.scene)} · ${TX.modeNum}</p><p>${TX.pDelText}</p>
+    <div class="row"><button class="sbtn primary" data-act="close" type="button">${I.close}${TX.no}</button>
+    <button class="sbtn ghost" data-act="p-num-del-yes" type="button">${I.trash}${TX.pDelYes}</button></div>`);
+  else if (a === 'p-num-del-yes') numDelete();
 });
 // Lara's menu: no deleting here
 function openMenu() {
@@ -9441,7 +10196,7 @@ function openParentStudio() {
   openSheet(`<h2>${TX.pTitle}</h2><p>${titleOf(S.scene)}</p>
     <button class="sbtn soft" data-act="p-save" type="button">${I.save}${TX.pSave}</button>
     ${canShare ? `<button class="sbtn" data-act="p-share" type="button">${I.share}${TX.pShare}</button>` : ''}
-    <button class="sbtn ghost" data-act="p-del" type="button">${I.trash}${TX.pDel}</button>
+    <button class="sbtn ghost" data-act="${S.num ? 'p-num-del' : 'p-del'}" type="button">${I.trash}${TX.pDel}</button>
     <button class="sbtn" data-act="close" type="button">${I.close}${TX.close}</button>`);
 }
 function openParentGallery() {
@@ -9512,7 +10267,7 @@ async function makeBackup() {
     items.push(Object.assign({}, m, { paint: rec && rec.paint ? bufToB64(rec.paint) : null, stk: rec && rec.stk ? rec.stk : [] }));
   }
   const d = new Date(), stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const blob = new Blob([JSON.stringify({ app: 'larine-omalovanky', v: 2, t: Date.now(), items })], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ app: 'larine-omalovanky', v: 2, t: Date.now(), items, num: [...NUMS.values()] })], { type: 'application/json' });
   backupFile = new File([blob], `omalovanky-zaloha-${stamp}.json`, { type: 'application/json' });
   if (sheetUrl2) URL.revokeObjectURL(sheetUrl2);
   sheetUrl2 = URL.createObjectURL(blob);
@@ -9543,6 +10298,10 @@ $('#restoreFile').addEventListener('change', async e => {
     const bin = atob(it.paint), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
     try { await DB.save(meta, { paint: u.buffer, stk: Array.isArray(it.stk) ? it.stk : [] }); METAS.set(meta.vid, meta); n++; } catch (err) { /* skip */ }
   }
+  for (const r of Array.isArray(data.num) ? data.num : []) {   // paint by numbers
+    if (!r || !r.key || !numById(r.scene) || NUMS.has(r.key)) continue;
+    try { await DB.numPut(r); NUMS.set(r.key, r); if (r.done) n++; } catch (err) { /* skip */ }
+  }
   buildGrid();
   openSheet(`<h2>${TX.pRestore}</h2><p>${TX.pRestoreDone(n)}</p><button class="sbtn" data-act="p-gallery" type="button">${I.close}${TX.back}</button>`);
 });
@@ -9552,7 +10311,7 @@ async function boot() {
   readTheme();
   matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', readTheme);
   new MutationObserver(readTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-  buildStatic(); buildChips(); buildTools(); buildPalette(); syncTools(); buildGrid();
+  buildStatic(); buildModes(); buildChips(); buildTools(); buildPalette(); syncTools(); buildGrid();
   $('#helloSay').addEventListener('click', () => sayKey('hello'));
   $('#langBtn').addEventListener('click', () => {
     if (MODE === 'artifact') { store.set('lang', LANG === 'sk' ? 'en' : 'sk'); location.reload(); }
@@ -9560,7 +10319,7 @@ async function boot() {
   });
   holdButton($('#gearG'), openParentGallery);
   holdButton($('#gearS'), openParentStudio);
-  await loadMetas(); buildGrid();
+  await Promise.all([loadMetas(), loadNums()]); buildGrid();
   if (window.ResizeObserver) new ResizeObserver(() => { if (!$('#studio').hidden) resizeCanvas(); }).observe($('#stage'));
   else window.addEventListener('resize', () => { if (!$('#studio').hidden) resizeCanvas(); });
   if (MODE === 'pwa' && 'serviceWorker' in navigator && location.protocol === 'https:') {
@@ -9571,7 +10330,7 @@ async function boot() {
   }
 }
 boot();
-window.__omalTest = () => ({ S, METAS, act });   // read-only peek for automated tests
+window.__omalTest = () => ({ S, METAS, NUMS, act, numPick, numTap, openNum });   // read-only peek for automated tests
 })();
 </script>
 
