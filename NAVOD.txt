@@ -1,0 +1,47 @@
+LARINE OMAĽOVÁNKY – ako ich dostať na iPad, aby fungovali aj bez internetu
+==========================================================================
+
+V tomto priečinku je celá aplikácia: index.html, sw.js, manifest.webmanifest a ikonky.
+Aby fungovala offline (v aute, v lietadle), musí sa raz otvoriť z internetovej adresy
+(https) a pridať na plochu iPadu. Potom si všetko pamätá a internet už netreba.
+
+1) Daj priečinok na internet (zadarmo, stačí raz)
+   - Na počítači otvor https://app.netlify.com/drop
+   - Prihlás sa (zadarmo), aby stránka po hodine nezmizla.
+   - Celý priečinok "lara-omalovanky" pretiahni myšou do okna.
+   - Dostaneš adresu, napr. https://nieco-nieco.netlify.app
+
+2) Na iPade
+   - Otvor tú adresu v Safari (s internetom).
+   - Ťukni na Zdieľať (štvorček so šípkou) a potom Pridať na plochu.
+   - Na ploche pribudne ikonka s mačičkou "Lara maľuje".
+   - Otvor ju raz s internetom. Dole v galérii sa objaví
+     "Funguje aj bez internetu." Hotovo, odteraz ide aj v režime lietadlo.
+
+3) Tipy
+   - Riadený prístup (Nastavenia > Prístupnosť > Riadený prístup) zamkne iPad
+     len na túto aplikáciu. Spustíš ho trojitým stlačením bočného tlačidla.
+     Hodí sa v aute aj v lietadle.
+   - Rozmaľované obrázky sa ukladajú v iPade v tejto aplikácii. Keď ikonku
+     z plochy vymažeš, zmažú sa aj obrázky.
+   - Pre rodičov: ozubené koliesko (v galérii hore vpravo, pri maľovaní na konci lišty s nástrojmi)
+     sa otvorí až po podržaní 3 sekundy. Je tam Uložiť obrázok do Fotiek, Zdieľať,
+     mazanie obrázkov, záloha a obnova zo zálohy.
+   - Anglická verzia je na tej istej adrese s /en/ na konci (alebo tlačidlo EN
+     v galérii). Obrázky sú spoločné pre obe verzie.
+   - Fixka maľuje len v ploche, kde prst začal, takže farba nikdy nevyjde
+     za čiaru. Vedierko vyfarbí celú plochu jedným ťuknutím.
+     Dvoma prstami sa obrázok priblíži.
+
+4) Keď pribudnú nové obrázky (aktualizácia)
+   Na laptope:
+   - Prihlás sa na app.netlify.com a otvor svoj projekt (larine-omalovanky).
+   - Vľavo klikni Deploys.
+   - Dole je rámček "Drag and drop your project output folder here".
+     Pretiahni doň priečinok "lara-omalovanky" (z priečinka Larine omalovanky na Ploche).
+   - Počkaj na zelené "Published". Adresa ostáva rovnaká.
+   Na iPade (s internetom):
+   - Otvor appku "Lara maľuje" z plochy a nechaj ju chvíľu otvorenú.
+   - Zavri ju (potiahni zospodu nahor a appku odsuň preč) a otvor znova.
+   - Nové obrázky sú v galérii. Larine rozmaľované obrázky ostanú.
+   - Ak sa nové obrázky neukážu, zopakuj zatvorenie a otvorenie ešte raz.
