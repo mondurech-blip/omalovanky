@@ -8512,9 +8512,19 @@ const SFX = {
 };
 
 // ---------- voice: recordings from clips.js (Julia SK, Bella EN); without one, the device voice reads the text ----------
-const CLIPS_READY = MODE === 'artifact' ? Promise.resolve() : new Promise(res => {
-  const s = document.createElement('script'); s.src = ROOT + 'clips-' + LANG + '.js'; s.onload = s.onerror = res; document.head.appendChild(s);
-});
+// The recordings file is big; if it fails to load (e.g. the server is busy for a moment), try again a few times.
+const clipsLoaded = () => !!(window.LARA_OMAL_CLIPS && window.LARA_OMAL_CLIPS[LANG] && Object.keys(window.LARA_OMAL_CLIPS[LANG]).length);
+function loadClipsFile(tries) {
+  return new Promise(res => {
+    const s = document.createElement('script'); s.src = ROOT + 'clips-' + LANG + '.js' + (tries < 4 ? '?r=' + tries : '');
+    s.onload = s.onerror = () => {
+      if (clipsLoaded() || tries <= 1) { res(); return; }
+      s.remove(); setTimeout(() => loadClipsFile(tries - 1).then(res), 1500);
+    };
+    document.head.appendChild(s);
+  });
+}
+let CLIPS_READY = MODE === 'artifact' ? Promise.resolve() : loadClipsFile(4);
 const clipCache = {};
 function b64ToBuf(b64) { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u.buffer; }
 // trims long silence at both ends so sentences follow each other naturally (same as in Počty)
