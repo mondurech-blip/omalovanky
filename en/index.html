@@ -9382,12 +9382,9 @@ function buildTools() {
     sz.appendChild(b);
   });
   document.querySelectorAll('[data-tool]').forEach(b => b.addEventListener('click', () => {
-    const was = S.tool;
     S.tool = b.dataset.tool; store.set('tool', S.tool);
     if (S.tool !== 'stickers') S.sel = -1;
     syncTools(); requestRender();
-    if (S.tool === 'stickers' && was !== 'stickers' && !store.get('stkHintSeen', false)) { sayKey('stk_hint'); store.set('stkHintSeen', true); }
-    else sayKey('tool_' + S.tool);
   }));
   $('#homeBtn').addEventListener('click', goHome);
   $('#undoBtn').addEventListener('click', undo);
@@ -9998,8 +9995,7 @@ function syncNumPalette() {
 function numPick(c) {
   const N = S.num; if (!N || !N.r) return;
   N.sel = c; N.idleT = performance.now();
-  const k = N.sc.cols[c - 1];
-  SFX.pick(); speak(['n' + c, 'c_' + k], `${c}. ${V['c_' + k][LI]}`);
+  SFX.pick();
   N.flash = { kind: 'color', ids: numLeft(c), t0: performance.now(), dur: 1500, color: numColor(c) };
   syncNumPalette(); requestRender();
 }
@@ -10009,7 +10005,7 @@ function numTap(ip) {
   const id = Core.regionAt(S.A, ip.x, ip.y, reach()), r = N.r;
   if (!id || !r.fits[id] || N.filled.has(id)) return;
   N.idleT = performance.now();
-  if (!N.sel) { sayKey('num_hint' + N.stage); return; }
+  if (!N.sel) return;
   if (r.color[id] !== N.sel) {   // no punishment: a soft sound and the number blinks
     SFX.wrong(); N.flash = { kind: 'wrong', ids: [id], t0: performance.now(), dur: 900 }; requestRender(); return;
   }
@@ -10024,7 +10020,7 @@ function numTap(ip) {
   if (!numLeft(0).length) {
     N.rec.done = true; S.undo = []; S.undoBytes = 0; syncUndo();
     setTimeout(() => { finishFill(); saveNow(); celebrate(); }, 650);
-  } else if (!numLeft(N.sel).length) setTimeout(() => { tone(784, 1047, 0.25, 'triangle', 0.07); sayKey('num_col_done'); }, 350);
+  } else if (!numLeft(N.sel).length) setTimeout(() => tone(784, 1047, 0.25, 'triangle', 0.07), 350);
   requestRender();
 }
 // colour picked / idle hint: the areas glow softly a few times
